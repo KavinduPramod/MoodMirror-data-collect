@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import hashlib
 import numpy as np
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ============================================================================
 # CONFIGURATION LOADING
@@ -342,6 +345,95 @@ def check_user_quality(posts):
     return True, "Passed all checks"
 
 
+def send_email_notification(milestone, total_users, avg_posts, avg_sentiment, time_elapsed):
+    """
+    Send email notification at collection milestones
+    """
+    # Get email credentials from credentials file
+    if 'notification_email' not in credentials:
+        return  # Skip if not configured
+    
+    sender_email = credentials.get('sender_email', credentials.get('notification_email'))
+    sender_password = credentials.get('sender_password', credentials.get('email_password'))
+    recipient_email = credentials.get('notification_email')
+    
+    if not all([sender_email, sender_password, recipient_email]):
+        print("   ⚠️  Email notification skipped - credentials not configured")
+        return
+    
+    try:
+        # Create message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"🎯 Reddit Collector Milestone: {milestone} Users Collected!"
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        
+        # Calculate progress
+        progress_percent = (total_users / settings['target_users']) * 100
+        hours = int(time_elapsed // 3600)
+        minutes = int((time_elapsed % 3600) // 60)
+        
+        # HTML body
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif;">
+            <h2 style="color: #2ecc71;">✅ Milestone Reached: {milestone} Users!</h2>
+            
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0;">
+              <h3 style="color: #34495e;">📊 Progress Update</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Users Collected:</strong> {total_users} / {settings['target_users']} ({progress_percent:.1f}%)</li>
+                <li><strong>Average Posts per User:</strong> {avg_posts:.1f}</li>
+                <li><strong>Average Sentiment:</strong> {avg_sentiment:.3f}</li>
+                <li><strong>Time Elapsed:</strong> {hours}h {minutes}m</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 15px 0;">
+              <h3 style="color: #34495e;">⏱️ Estimated Time Remaining</h3>
+              <p style="font-size: 16px;">Based on current rate: ~{int((settings['target_users'] - total_users) * (time_elapsed / total_users) / 3600)} hours</p>
+            </div>
+            
+            <p style="color: #7f8c8d; font-size: 14px; margin-top: 20px;">
+              <em>Reddit Mental Health Data Collector<br>
+              Running on: DigitalOcean Droplet</em>
+            </p>
+          </body>
+        </html>
+        """
+        
+        # Plain text fallback
+        text = f"""
+        Milestone Reached: {milestone} Users Collected!
+        
+        Progress Update:
+        - Users Collected: {total_users} / {settings['target_users']} ({progress_percent:.1f}%)
+        - Average Posts per User: {avg_posts:.1f}
+        - Average Sentiment: {avg_sentiment:.3f}
+        - Time Elapsed: {hours}h {minutes}m
+        
+        Estimated Time Remaining: ~{int((settings['target_users'] - total_users) * (time_elapsed / total_users) / 3600)} hours
+        
+        Reddit Mental Health Data Collector
+        """
+        
+        # Attach parts
+        part1 = MIMEText(text, 'plain')
+        part2 = MIMEText(html, 'html')
+        msg.attach(part1)
+        msg.attach(part2)
+        
+        # Send email via Gmail SMTP
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        
+        print(f"   📧 Email notification sent to {recipient_email}")
+        
+    except Exception as e:
+        print(f"   ⚠️  Failed to send email notification: {e}")
+
+
 def extract_features(posts):
     """
     Extract features needed for your model
@@ -574,6 +666,21 @@ for username in candidates_to_check:
     # Save after each user (in case of interruption)
     with open('data/collected_users.json', 'w') as f:
         json.dump(collected_users, f, indent=2)
+    
+    # Send email notification every 100 users
+    if len(collected_users) % 100 == 0:
+        total_posts = sum(u['features']['total_posts'] for u in collected_users)
+        avg_posts = total_posts / len(collected_users)
+        avg_sentiment = sum(u['features']['avg_sentiment'] for u in collected_users) / len(collected_users)
+        time_elapsed = time.time() - start_time
+        
+        send_email_notification(
+            milestone=len(collected_users),
+            total_users=len(collected_users),
+            avg_posts=avg_posts,
+            avg_sentiment=avg_sentiment,
+            time_elapsed=time_elapsed
+        )
     
     # Rate limiting
     time.sleep(2)

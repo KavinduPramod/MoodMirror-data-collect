@@ -1,0 +1,36 @@
+[Unit]
+Description=Reddit Mental Health Data Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/fyp/data-collection
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONOPTIMIZE=2"
+
+# Resource optimization
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+CPUWeight=200
+MemoryHigh=1.5G
+MemoryMax=1.8G
+
+# Logging
+StandardOutput=append:/home/fyp/data-collection/logs/collector.log
+StandardError=append:/home/fyp/data-collection/logs/collector-error.log
+SyslogIdentifier=reddit-collector
+
+# Restart policy
+Restart=on-failure
+RestartSec=30s
+StartLimitInterval=300s
+StartLimitBurst=3
+
+# Execute the Python script
+ExecStart=/home/fyp/data-collection/venv/bin/python3 /home/fyp/data-collection/collect.py
+
+[Install]
+WantedBy=multi-user.target
