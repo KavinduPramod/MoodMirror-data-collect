@@ -1,0 +1,57 @@
+{
+  "collection_settings": {
+    "target_users": 3000,
+    "min_posts_per_user": 5,
+    "time_window_days": 75,
+    "min_text_length": 20,
+    "min_subreddits": 2,
+    "min_mh_posts": 3,
+    "min_mh_participation_ratio": 0.15,
+    "min_baseline_stability": 0.70,
+    "user_categories": {
+      "cold_start": {"min": 5, "max": 15, "target_users": 900},
+      "transition": {"min": 16, "max": 30, "target_users": 900},
+      "full_personalization": {"min": 31, "max": 200, "target_users": 1200}
+    }
+  },
+  
+  "subreddits_to_search": [
+   "depression",
+   "anxiety", 
+   "mentalhealth",
+   "suicidewatch",
+   "BPD",
+   "bipolarreddit",
+   "OCD",
+   "PTSD",
+   "addiction",
+   "EDAnonymous",
+   "socialanxiety",
+   "Agoraphobia",
+   "panicattack",
+   "TrueOffMyChest",
+   "mentalillness",
+   "therapy",
+   "traumatoolbox",
+   "mentalhealthsupport",
+   "anxietyhelp",
+   "depressionhelp",
+   "HealthAnxiety",
+   "CPTSD",
+   "askatherapist",
+   "stopselfharm",
+   "eating_disorders",
+   "Psychosis",
+   "schizophrenia",
+   "dpdr",
+   "lonely",
+   "SuicideBereavement",
+   "getting_over_it",
+   "DecidingToBeBetter",
+   "selfimprovement"
+  ],
+  
+  "sort_methods": ["hot", "new", "top", "rising", "controversial"],
+  
+  "posts_to_scan_per_subreddit": 120
+}
