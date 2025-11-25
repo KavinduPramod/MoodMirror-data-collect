@@ -11,9 +11,7 @@ from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import hashlib
 import numpy as np
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 
 # ============================================================================
 # CONFIGURATION LOADING
@@ -171,6 +169,22 @@ def collect_user_posts(username, days_back):
             
             time.sleep(0.1)  # Rate limit
         
+        # EARLY FILTER: Quick MH participation check to save time
+        if len(posts) >= 10:  # Only check if we have some posts
+            mental_health_subs_lower = [
+                'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
+                'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
+                'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
+                'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
+                'stopselfharm', 'dpdr', 'lonely'
+            ]
+            mh_posts = sum(1 for p in posts if p['subreddit'].lower() in mental_health_subs_lower)
+            mh_ratio = mh_posts / len(posts)
+            
+            # If MH ratio is way too low, return empty to skip detailed analysis
+            if mh_ratio < 0.25:  # Pre-filter at 25% (will validate at 40% later)
+                return []  # This user won't meet 40% threshold, skip early
+        
         # Sort by time
         posts.sort(key=lambda x: x['timestamp'])
         
@@ -319,13 +333,13 @@ def check_user_quality(posts):
         return False, f"Only posts in {len(subreddits)} subreddit(s)"
     
     # Check 5: Mental health participation (NEW)
-    mental_health_subs = ['depression', 'anxiety', 'mentalhealth', 'suicidewatch', 
-                          'lonely', 'bipolarreddit', 'bpd', 'adhd', 'ocd', 'ptsd',
-                          'addiction', 'edanonymous', 'socialanxiety', 'agoraphobia',
-                          'panicattack', 'mentalillness', 'therapy', 'traumatoolbox',
-                          'mentalhealthsupport', 'anxietyhelp', 'depressionhelp',
-                          'healthanxiety', 'cptsd', 'askatherapist', 'stopselfharm',
-                          'eating_disorders', 'psychosis', 'schizophrenia', 'dpdr']
+    mental_health_subs = [
+        'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
+        'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
+        'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
+        'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
+        'stopselfharm', 'dpdr', 'lonely'
+    ]
     
     mh_posts = sum(1 for p in posts if p['subreddit'].lower() in mental_health_subs)
     mh_ratio = mh_posts / len(posts)
@@ -345,29 +359,55 @@ def check_user_quality(posts):
     return True, "Passed all checks"
 
 
+def validate_sentiment_distribution(posts):
+    """
+    Validate that user's sentiment distribution is consistent with mental health populations
+    Returns: (pass/fail, reason, avg_sentiment)
+    """
+    if len(posts) < 10:
+        return False, "Insufficient posts for sentiment validation", 0.0
+    
+    # Get validation thresholds from config (with fallback values)
+    if 'sentiment_validation' in settings:
+        min_sent = settings['sentiment_validation'].get('min_sentiment', -0.6)
+        max_sent = settings['sentiment_validation'].get('max_sentiment', 0.25)
+        min_neg_posts = settings['sentiment_validation'].get('require_negative_posts', 10)
+    else:
+        # Fallback if not in config
+        min_sent = -0.6
+        max_sent = 0.25
+        min_neg_posts = 10
+    
+    # Calculate sentiment for all posts
+    sentiments = [sentiment_analyzer.polarity_scores(p['text'])['compound'] 
+                  for p in posts]
+    
+    avg_sentiment = np.mean(sentiments)
+    negative_posts = sum(1 for s in sentiments if s < -0.05)
+    
+    # Check if sentiment is in expected range for MH populations
+    if avg_sentiment > max_sent:
+        return False, f"Average sentiment too positive ({avg_sentiment:.3f}, expected {min_sent} to {max_sent})", avg_sentiment
+    
+    if avg_sentiment < min_sent:
+        return False, f"Average sentiment unusually negative ({avg_sentiment:.3f}, may indicate bot/spam)", avg_sentiment
+    
+    # Check minimum negative posts requirement
+    if negative_posts < min_neg_posts:
+        return False, f"Only {negative_posts} negative posts (expected {min_neg_posts}+)", avg_sentiment
+    
+    return True, "Sentiment distribution validated", avg_sentiment
+
+
 def send_email_notification(milestone, total_users, avg_posts, avg_sentiment, time_elapsed):
     """
-    Send email notification at collection milestones
+    Send email notification at collection milestones using Resend API
     """
-    # Get email credentials from credentials file
-    if 'notification_email' not in credentials:
-        return  # Skip if not configured
-    
-    sender_email = credentials.get('sender_email', credentials.get('notification_email'))
-    sender_password = credentials.get('sender_password', credentials.get('email_password'))
-    recipient_email = credentials.get('notification_email')
-    
-    if not all([sender_email, sender_password, recipient_email]):
-        print("   ⚠️  Email notification skipped - credentials not configured")
+    if 'resend_api_key' not in credentials or 'notification_email' not in credentials:
+        print("   ⚠️  Email notification skipped - Resend API key or email not configured")
         return
     
     try:
-        # Create message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"🎯 Reddit Collector Milestone: {milestone} Users Collected!"
-        msg['From'] = sender_email
-        msg['To'] = recipient_email
-        
         # Calculate progress
         progress_percent = (total_users / settings['target_users']) * 100
         hours = int(time_elapsed // 3600)
@@ -395,43 +435,116 @@ def send_email_notification(milestone, total_users, avg_posts, avg_sentiment, ti
             </div>
             
             <p style="color: #7f8c8d; font-size: 14px; margin-top: 20px;">
-              <em>Reddit Mental Health Data Collector<br>
-              Running on: DigitalOcean Droplet</em>
+              <em>Reddit Mental Health Data Collector</em>
             </p>
           </body>
         </html>
         """
         
-        # Plain text fallback
-        text = f"""
-        Milestone Reached: {milestone} Users Collected!
+        # Send via Resend API
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {credentials["resend_api_key"]}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'from': 'Reddit Collector <noreply@info.moodmirror.online>',
+                'to': [credentials['notification_email']],
+                'subject': f'🎯 Reddit Collector Milestone: {milestone} Users Collected!',
+                'html': html
+            },
+            timeout=10
+        )
         
-        Progress Update:
-        - Users Collected: {total_users} / {settings['target_users']} ({progress_percent:.1f}%)
-        - Average Posts per User: {avg_posts:.1f}
-        - Average Sentiment: {avg_sentiment:.3f}
-        - Time Elapsed: {hours}h {minutes}m
+        if response.status_code == 200:
+            print(f"   📧 Email notification sent to {credentials['notification_email']}")
+        else:
+            print(f"   ⚠️  Failed to send email: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        print(f"   ⚠️  Email notification error: {e}")
+
+
+def send_completion_email(total_users, total_posts, avg_posts, avg_sentiment, avg_mh_participation, 
+                         total_time, candidates_checked, candidates_rejected):
+    """
+    Send email notification when data collection is completed using Resend API
+    """
+    if 'resend_api_key' not in credentials or 'notification_email' not in credentials:
+        print("   ⚠️  Completion email skipped - Resend API key or email not configured")
+        return
+    
+    try:
+        hours = int(total_time // 3600)
+        minutes = int((total_time % 3600) // 60)
+        seconds = int(total_time % 60)
         
-        Estimated Time Remaining: ~{int((settings['target_users'] - total_users) * (time_elapsed / total_users) / 3600)} hours
-        
-        Reddit Mental Health Data Collector
+        # HTML body
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif;">
+            <h2 style="color: #27ae60;">🎉 Data Collection Completed!</h2>
+            
+            <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #28a745;">
+              <h3 style="color: #155724;">✅ Collection Summary</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Total Users Collected:</strong> {total_users} / {settings['target_users']}</li>
+                <li><strong>Total Posts Collected:</strong> {total_posts:,}</li>
+                <li><strong>Average Posts per User:</strong> {avg_posts:.1f}</li>
+                <li><strong>Success Rate:</strong> {total_users/max(candidates_checked,1)*100:.1f}%</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0;">
+              <h3 style="color: #34495e;">📊 Dataset Quality</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Average Sentiment:</strong> {avg_sentiment:.3f}</li>
+                <li><strong>Average MH Participation:</strong> {avg_mh_participation:.1%}</li>
+                <li><strong>Candidates Checked:</strong> {candidates_checked}</li>
+                <li><strong>Candidates Rejected:</strong> {candidates_rejected}</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 15px 0;">
+              <h3 style="color: #34495e;">⏱️ Time Statistics</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Total Time:</strong> {hours}h {minutes}m {seconds}s</li>
+                <li><strong>Average Time per User:</strong> {total_time/total_users:.1f} seconds</li>
+                <li><strong>Posts Collected per Hour:</strong> {(total_posts/(total_time/3600)):.1f}</li>
+              </ul>
+            </div>
+            
+            <p style="color: #7f8c8d; font-size: 14px; margin-top: 20px;">
+              <em>Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</em>
+            </p>
+          </body>
+        </html>
         """
         
-        # Attach parts
-        part1 = MIMEText(text, 'plain')
-        part2 = MIMEText(html, 'html')
-        msg.attach(part1)
-        msg.attach(part2)
+        # Send via Resend API
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {credentials["resend_api_key"]}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'from': 'Reddit Collector <noreply@info.moodmirror.online>',
+                'to': [credentials['notification_email']],
+                'subject': '🎉 Reddit Data Collection Completed!',
+                'html': html
+            },
+            timeout=10
+        )
         
-        # Send email via Gmail SMTP
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, msg.as_string())
-        
-        print(f"   📧 Email notification sent to {recipient_email}")
-        
+        if response.status_code == 200:
+            print(f"\n📧 Completion email sent to {credentials['notification_email']}")
+        else:
+            print(f"\n⚠️  Failed to send completion email: {response.status_code} - {response.text}")
+            
     except Exception as e:
-        print(f"   ⚠️  Failed to send email notification: {e}")
+        print(f"\n⚠️  Completion email error: {e}")
 
 
 def extract_features(posts):
@@ -470,8 +583,13 @@ def extract_features(posts):
     subreddits = [p['subreddit'] for p in posts]
     unique_subreddits = len(set(subreddits))
     
-    mental_health_subs = ['depression', 'anxiety', 'mentalhealth', 'suicidewatch', 
-                          'lonely', 'bipolarreddit', 'bpd', 'adhd']
+    mental_health_subs = [
+        'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
+        'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
+        'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
+        'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
+        'stopselfharm', 'dpdr', 'lonely'
+    ]
     mh_posts = sum(1 for s in subreddits if s.lower() in mental_health_subs)
     mh_ratio = mh_posts / len(posts)
     
@@ -572,6 +690,60 @@ print(f"   Found: {len(all_candidates)} total candidates")
 print(f"   Already collected: {len(already_collected)} users")
 print(f"   New to check: {len(candidates_to_check)} users")
 
+# Send startup email with candidate info using Resend API
+try:
+    if 'resend_api_key' in credentials and 'notification_email' in credentials:
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif;">
+            <h2 style="color: #3498db;">🚀 Data Collection Started!</h2>
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">
+              <h3>Collection Parameters:</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Target Users:</strong> {settings['target_users']}</li>
+                <li><strong>Min Posts per User:</strong> {settings['min_posts_per_user']}</li>
+                <li><strong>Min MH Participation:</strong> {settings['min_mh_participation_ratio']:.0%}</li>
+                <li><strong>Sentiment Range:</strong> -0.6 to 0.25</li>
+                <li><strong>Baseline Stability:</strong> ≥{settings['min_baseline_stability']}</li>
+              </ul>
+            </div>
+            <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-top: 15px;">
+              <h3>Candidate Discovery:</h3>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                <li><strong>Total Candidates Found:</strong> {len(all_candidates)}</li>
+                <li><strong>Already Collected:</strong> {len(already_collected)}</li>
+                <li><strong>New to Check:</strong> {len(candidates_to_check)}</li>
+              </ul>
+            </div>
+            <p style="color: #7f8c8d; margin-top: 20px;">Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+          </body>
+        </html>
+        """
+        
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {credentials["resend_api_key"]}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'from': 'Reddit Collector <noreply@info.moodmirror.online>',
+                'to': [credentials['notification_email']],
+                'subject': '🚀 Reddit Data Collection Started!',
+                'html': html
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print("   📧 Startup email sent via Resend\n")
+        else:
+            print(f"   ⚠️  Failed to send startup email: {response.status_code}\n")
+    else:
+        print("   ⚠️  Resend API key not configured, skipping startup email\n")
+except Exception as e:
+    print(f"   ⚠️  Could not send startup email: {e}\n")
+
 # Collection loop
 print("\n--- PHASE 2: COLLECTING USER DATA ---")
 print(f"Target: {settings['target_users']} users\n")
@@ -604,30 +776,27 @@ for username in candidates_to_check:
         candidates_rejected += 1
         continue
     
+    # NEW: Validate sentiment distribution
+    sentiment_valid, sentiment_reason, avg_sentiment = validate_sentiment_distribution(posts)
+    if not sentiment_valid:
+        print(f"   ⏭️  {sentiment_reason}")
+        candidates_rejected += 1
+        continue
+    else:
+        print(f"   ✅ Sentiment validated: avg={avg_sentiment:.3f}")
+    
     # Extract features
     features = extract_features(posts)
     
-    # Determine category based on post count for stratified sampling
+    # Focus only on users with sufficient data (full personalization)
     post_count = len(posts)
-    if 'user_categories' in settings:
-        if post_count < settings['user_categories']['transition']['min']:
-            category = 'cold_start'
-        elif post_count < settings['user_categories']['full_personalization']['min']:
-            category = 'transition'
-        else:
-            category = 'full_personalization'
-        
-        # Check if category is full
-        target_per_category = {
-            'cold_start': settings['user_categories']['cold_start']['target_users'],
-            'transition': settings['user_categories']['transition']['target_users'],
-            'full_personalization': settings['user_categories']['full_personalization']['target_users']
-        }
-        
-        if category_counts[category] >= target_per_category[category]:
-            print(f"   ⏭️  Category '{category}' full ({category_counts[category]}/{target_per_category[category]}), skipping")
-            candidates_rejected += 1
-            continue
+    if post_count < 30:
+        print(f"   ⏭️  Only {post_count} posts (need 30+ for reliable baselines)")
+        candidates_rejected += 1
+        continue
+
+    # All accepted users are "full_personalization" category
+    category = "full_personalization"
     
     # Calculate baseline stability for metadata
     baseline_stability = calculate_baseline_stability(posts) if len(posts) >= 20 else 0.0
@@ -685,7 +854,7 @@ for username in candidates_to_check:
     # Rate limiting
     time.sleep(2)
 
-# ============================================================================
+# ===============================================================F=============
 # FINAL SUMMARY
 # ============================================================================
 
@@ -709,6 +878,15 @@ if collected_users:
     print(f"   Average posts per user: {avg_posts:.1f}")
     print(f"   Average sentiment: {avg_sentiment:.3f}")
     print(f"   Average MH subreddit participation: {avg_mh_participation:.1%}")
+    
+    # NEW: Sentiment distribution validation
+    sentiments = [user['features']['avg_sentiment'] for user in collected_users]
+    mh_participation_ratios = [user['features']['mental_health_participation'] for user in collected_users]
+    print(f"\n🎯 Data Quality Validation:")
+    print(f"   Sentiment range: {min(sentiments):.3f} to {max(sentiments):.3f}")
+    print(f"   Users with negative sentiment: {sum(1 for s in sentiments if s < 0)} ({sum(1 for s in sentiments if s < 0)/len(sentiments):.1%})")
+    print(f"   Average MH participation: {avg_mh_participation:.1%}")
+    print(f"   Users meeting 40%+ MH threshold: {sum(1 for ratio in mh_participation_ratios if ratio >= 0.4)} ({sum(1 for ratio in mh_participation_ratios if ratio >= 0.4)/len(mh_participation_ratios):.1%})")
 
 print(f"\n💾 Data saved to: data/collected_users.json")
 
@@ -754,35 +932,28 @@ print(f"   Total time: {hours}h {minutes}m {seconds}s")
 print(f"   Average time per user: {total_time/len(collected_users):.1f} seconds")
 print(f"   Posts collected per hour: {(total_posts/(total_time/3600)):.1f}")
 
+# Send completion email notification
+if collected_users:
+    send_completion_email(
+        total_users=len(collected_users),
+        total_posts=total_posts,
+        avg_posts=avg_posts,
+        avg_sentiment=avg_sentiment,
+        avg_mh_participation=avg_mh_participation,
+        total_time=total_time,
+        candidates_checked=candidates_checked,
+        candidates_rejected=candidates_rejected
+    )
+
 # Cold start analysis statistics
 if collected_users:
-    cold_start_users = sum(1 for u in collected_users 
-                          if u['cold_start_metadata']['cold_start_phase'] == 'cold_start')
-    transition_users = sum(1 for u in collected_users 
-                          if u['cold_start_metadata']['cold_start_phase'] == 'transition')
-    full_users = sum(1 for u in collected_users 
-                    if u['cold_start_metadata']['cold_start_phase'] == 'fully_personalized')
-    
-    avg_confidence = sum(u['cold_start_metadata']['confidence_score'] 
-                        for u in collected_users) / len(collected_users)
-    
-    avg_stability = sum(u['cold_start_metadata']['baseline_stability'] 
-                       for u in collected_users) / len(collected_users)
-    
-    suitable_for_cold_start = sum(1 for u in collected_users 
-                                  if u['cold_start_metadata']['suitable_for_cold_start_testing'])
-    
-    suitable_for_baseline = sum(1 for u in collected_users 
-                               if u['cold_start_metadata']['suitable_for_baseline_testing'])
-    
-    print("\n🔬 Cold Start Analysis Statistics:")
-    print(f"   Cold start users (5-15 posts): {cold_start_users}")
-    print(f"   Transition users (16-30 posts): {transition_users}")
-    print(f"   Fully personalized users (31+ posts): {full_users}")
-    print(f"   Average confidence score: {avg_confidence:.3f}")
-    print(f"   Average baseline stability: {avg_stability:.3f}")
-    print(f"   Users suitable for cold start testing: {suitable_for_cold_start}")
-    print(f"   Users suitable for baseline testing: {suitable_for_baseline}")
+    print(f"\n🔬 Dataset Composition:")
+    print(f"   All users have 30+ posts (full personalization focus)")
+    print(f"   Post count distribution:")
+    post_counts = [u['cold_start_metadata']['post_count'] for u in collected_users]
+    print(f"     30-50 posts: {sum(1 for count in post_counts if 30 <= count <= 50)}")
+    print(f"     51-80 posts: {sum(1 for count in post_counts if 51 <= count <= 80)}")
+    print(f"     81+ posts: {sum(1 for count in post_counts if count > 80)}")
 
 # write all the print statements to a log file
 with open('data/collection_log.txt', 'w', encoding='utf-8') as log_file:
@@ -800,35 +971,29 @@ with open('data/collection_log.txt', 'w', encoding='utf-8') as log_file:
         log_file.write(f"   Average posts per user: {avg_posts:.1f}\n")
         log_file.write(f"   Average sentiment: {avg_sentiment:.3f}\n")
         log_file.write(f"   Average MH subreddit participation: {avg_mh_participation:.1%}\n")
+        
+        # NEW: Sentiment distribution validation
+        sentiments = [user['features']['avg_sentiment'] for user in collected_users]
+        mh_participation_ratios = [user['features']['mental_health_participation'] for user in collected_users]
+        log_file.write(f"\n🎯 Data Quality Validation:\n")
+        log_file.write(f"   Sentiment range: {min(sentiments):.3f} to {max(sentiments):.3f}\n")
+        log_file.write(f"   Users with negative sentiment: {sum(1 for s in sentiments if s < 0)} ({sum(1 for s in sentiments if s < 0)/len(sentiments):.1%})\n")
+        log_file.write(f"   Average MH participation: {avg_mh_participation:.1%}\n")
+        log_file.write(f"   Users meeting 40%+ MH threshold: {sum(1 for ratio in mh_participation_ratios if ratio >= 0.4)} ({sum(1 for ratio in mh_participation_ratios if ratio >= 0.4)/len(mh_participation_ratios):.1%})\n")
+        
         log_file.write(f"\n⏱️ Collection Time Statistics:\n")
         log_file.write(f"   Total time: {hours}h {minutes}m {seconds}s\n")
         log_file.write(f"   Average time per user: {total_time/len(collected_users):.1f} seconds\n")
         log_file.write(f"   Posts collected per hour: {(total_posts/(total_time/3600)):.1f}\n")
         
         # Cold start statistics
-        cold_start_users = sum(1 for u in collected_users 
-                              if u['cold_start_metadata']['cold_start_phase'] == 'cold_start')
-        transition_users = sum(1 for u in collected_users 
-                              if u['cold_start_metadata']['cold_start_phase'] == 'transition')
-        full_users = sum(1 for u in collected_users 
-                        if u['cold_start_metadata']['cold_start_phase'] == 'fully_personalized')
-        avg_confidence = sum(u['cold_start_metadata']['confidence_score'] 
-                            for u in collected_users) / len(collected_users)
-        avg_stability = sum(u['cold_start_metadata']['baseline_stability'] 
-                           for u in collected_users) / len(collected_users)
-        suitable_for_cold_start = sum(1 for u in collected_users 
-                                      if u['cold_start_metadata']['suitable_for_cold_start_testing'])
-        suitable_for_baseline = sum(1 for u in collected_users 
-                                   if u['cold_start_metadata']['suitable_for_baseline_testing'])
-        
-        log_file.write(f"\n🔬 Cold Start Analysis Statistics:\n")
-        log_file.write(f"   Cold start users (5-15 posts): {cold_start_users}\n")
-        log_file.write(f"   Transition users (16-30 posts): {transition_users}\n")
-        log_file.write(f"   Fully personalized users (31+ posts): {full_users}\n")
-        log_file.write(f"   Average confidence score: {avg_confidence:.3f}\n")
-        log_file.write(f"   Average baseline stability: {avg_stability:.3f}\n")
-        log_file.write(f"   Users suitable for cold start testing: {suitable_for_cold_start}\n")
-        log_file.write(f"   Users suitable for baseline testing: {suitable_for_baseline}\n")
+        log_file.write(f"\n🔬 Dataset Composition:\n")
+        log_file.write(f"   All users have 30+ posts (full personalization focus)\n")
+        log_file.write(f"   Post count distribution:\n")
+        post_counts = [u['cold_start_metadata']['post_count'] for u in collected_users]
+        log_file.write(f"     30-50 posts: {sum(1 for count in post_counts if 30 <= count <= 50)}\n")
+        log_file.write(f"     51-80 posts: {sum(1 for count in post_counts if 51 <= count <= 80)}\n")
+        log_file.write(f"     81+ posts: {sum(1 for count in post_counts if count > 80)}\n")
     else:
         log_file.write("\nNo users were collected.\n")
 
