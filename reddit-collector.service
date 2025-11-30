@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/fyp/data-collection
+WorkingDirectory=/home/fyp/MoodMirror-data-collect
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONOPTIMIZE=2"
 
@@ -19,8 +19,8 @@ MemoryHigh=1.5G
 MemoryMax=1.8G
 
 # Logging
-StandardOutput=append:/home/fyp/data-collection/logs/collector.log
-StandardError=append:/home/fyp/data-collection/logs/collector-error.log
+StandardOutput=append:/home/fyp/MoodMirror-data-collect/logs/collector.log
+StandardError=append:/home/fyp/MoodMirror-data-collect/logs/collector-error.log
 SyslogIdentifier=reddit-collector
 
 # Restart policy
@@ -30,7 +30,7 @@ StartLimitInterval=300s
 StartLimitBurst=3
 
 # Execute the Python script
-ExecStart=/home/fyp/data-collection/venv/bin/python3 /home/fyp/data-collection/collect.py
+ExecStart=/home/fyp/MoodMirror-data-collect/venv/bin/python3 /home/fyp/MoodMirror-data-collect/collect.py
 
 [Install]
 WantedBy=multi-user.target
