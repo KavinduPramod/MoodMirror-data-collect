@@ -14,17 +14,14 @@
     "early_mh_filter_threshold": 10,
     "rate_limit_seconds": 2,
     "email_milestone_frequency": 100,
-
     "late_night_hour_start": 0,
     "late_night_hour_end": 6,
-
     "sentiment_validation": {
       "min_sentiment": -0.6,
       "max_sentiment": 0.1,
       "require_negative_posts": 10
     }
   },
-
   "subreddits_to_search": [
     "depression",
     "depression_help",
@@ -33,36 +30,29 @@
     "lonely",
     "offmychest",
     "vent",
-
     "Anxiety",
     "socialanxiety",
     "panicdisorder",
     "HealthAnxiety",
     "panicattack",
-
     "mentalhealth",
     "mentalillness",
     "MentalHealthSupport",
-
     "BPD",
     "bipolar",
     "OCD",
     "PTSD",
     "CPTSD",
     "stopselfharm",
-
     "ADHD",
     "adhdwomen",
-
     "emotionalabuse",
     "raisedbynarcissists",
     "griefsupport",
-
     "therapy",
     "anxietyhelp",
     "depressionhelp",
     "mentalhealthsupport",
-
     "TrueOffMyChest",
     "getting_over_it",
     "ForeverAlone",
@@ -73,8 +63,6 @@
     "BorderlinePDisorder",
     "bipolar2"
   ],
-
   "sort_methods": ["hot", "new", "top"],
-
   "posts_to_scan_per_subreddit": 1000
 }
