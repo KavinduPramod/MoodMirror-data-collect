@@ -59,6 +59,9 @@ except:
 # Initialize sentiment analyzer
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
+# Extract mental health subreddits from config (used multiple times)
+mental_health_subs = [sub.lower() for sub in config['subreddits_to_search']]
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -170,20 +173,16 @@ def collect_user_posts(username, days_back):
             time.sleep(0.1)  # Rate limit
         
         # EARLY FILTER: Quick MH participation check to save time
-        if len(posts) >= 10:  # Only check if we have some posts
-            mental_health_subs_lower = [
-                'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
-                'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
-                'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
-                'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
-                'stopselfharm', 'dpdr', 'lonely'
-            ]
-            mh_posts = sum(1 for p in posts if p['subreddit'].lower() in mental_health_subs_lower)
+        early_filter_threshold = settings.get('early_mh_filter_threshold', 10)
+        if len(posts) >= early_filter_threshold:
+            mh_posts = sum(1 for p in posts if p['subreddit'].lower() in mental_health_subs)
             mh_ratio = mh_posts / len(posts)
             
             # If MH ratio is way too low, return empty to skip detailed analysis
-            if mh_ratio < 0.25:  # Pre-filter at 25% (will validate at 40% later)
-                return []  # This user won't meet 40% threshold, skip early
+            # Use 60% of required ratio for early filtering to be efficient
+            early_filter_ratio = settings.get('min_mh_participation_ratio', 0.40) * 0.6
+            if mh_ratio < early_filter_ratio:
+                return []  # This user won't meet threshold, skip early
         
         # Sort by time
         posts.sort(key=lambda x: x['timestamp'])
@@ -193,21 +192,6 @@ def collect_user_posts(username, days_back):
     except Exception as e:
         print(f"      Error collecting {username}: {e}")
         return []
-
-
-def calculate_dynamic_window(posting_frequency):
-    """
-    Calculate dynamic time window based on posting frequency
-    High frequency (>1 post/day): 21-day window
-    Medium frequency (3-7 posts/week): 30-45 day window
-    Low frequency (<3 posts/week): 45-60 day window
-    """
-    if posting_frequency > 1.0:  # >1 post/day
-        return 21
-    elif posting_frequency >= 0.43:  # 3+ posts/week
-        return 35
-    else:  # <3 posts/week
-        return 50
 
 
 def calculate_baseline_stability(posts):
@@ -266,8 +250,8 @@ def calculate_z_scores(posts):
 
 def calculate_confidence_score(post_count, minimum_reliable_threshold=30):
     """
-    Calculate confidence score for cold start problem
-    Returns: confidence_score (0-1)
+    Calculate confidence score based on post count
+    Returns: confidence_score (0-1), 1.0 = sufficient data for full personalization
     """
     return min(1.0, post_count / minimum_reliable_threshold)
 
@@ -317,8 +301,9 @@ def check_user_quality(posts):
     timestamps = [p['timestamp'] for p in posts]
     time_span_days = (max(timestamps) - min(timestamps)) / 86400
     
-    if time_span_days < 7:
-        return False, f"All posts within {time_span_days:.1f} days (need 7+ days spread)"
+    min_time_span = settings.get('min_time_span_days', 7)
+    if time_span_days < min_time_span:
+        return False, f"All posts within {time_span_days:.1f} days (need {min_time_span}+ days spread)"
     
     # Check 3: Average text length
     avg_length = sum(len(p['text']) for p in posts) / len(posts)
@@ -330,17 +315,9 @@ def check_user_quality(posts):
     subreddits = set(p['subreddit'] for p in posts)
     
     if len(subreddits) < settings['min_subreddits']:
-        return False, f"Only posts in {len(subreddits)} subreddit(s)"
+        return False, f"Only {len(subreddits)} different subreddits (need {settings['min_subreddits']})"
     
-    # Check 5: Mental health participation (NEW)
-    mental_health_subs = [
-        'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
-        'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
-        'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
-        'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
-        'stopselfharm', 'dpdr', 'lonely'
-    ]
-    
+    # Check 5: Mental health participation (using config)
     mh_posts = sum(1 for p in posts if p['subreddit'].lower() in mental_health_subs)
     mh_ratio = mh_posts / len(posts)
     
@@ -351,7 +328,8 @@ def check_user_quality(posts):
         return False, f"Only {mh_ratio:.1%} MH participation (need {settings['min_mh_participation_ratio']:.1%})"
     
     # Check 6: Baseline stability (for users with enough posts)
-    if len(posts) >= 20 and 'min_baseline_stability' in settings:
+    min_posts_for_stability = settings.get('min_posts_for_stability_check', 20)
+    if len(posts) >= min_posts_for_stability and 'min_baseline_stability' in settings:
         baseline_stability = calculate_baseline_stability(posts)
         if baseline_stability < settings['min_baseline_stability']:
             return False, f"Low baseline stability ({baseline_stability:.2f}, need {settings['min_baseline_stability']:.2f})"
@@ -364,8 +342,9 @@ def validate_sentiment_distribution(posts):
     Validate that user's sentiment distribution is consistent with mental health populations
     Returns: (pass/fail, reason, avg_sentiment)
     """
-    if len(posts) < 10:
-        return False, "Insufficient posts for sentiment validation", 0.0
+    min_posts_for_sentiment = settings.get('min_posts_for_sentiment_check', 10)
+    if len(posts) < min_posts_for_sentiment:
+        return False, f"Insufficient posts for sentiment validation (need {min_posts_for_sentiment})", 0.0
     
     # Get validation thresholds from config (with fallback values)
     if 'sentiment_validation' in settings:
@@ -559,7 +538,9 @@ def extract_features(posts):
     
     # Get posting hours
     hours = [datetime.fromtimestamp(ts).hour for ts in timestamps]
-    late_night_posts = sum(1 for h in hours if 0 <= h < 6)
+    late_night_start = settings.get('late_night_hour_start', 0)
+    late_night_end = settings.get('late_night_hour_end', 6)
+    late_night_posts = sum(1 for h in hours if late_night_start <= h < late_night_end)
     late_night_ratio = late_night_posts / len(posts)
     
     # Sentiment analysis
@@ -583,13 +564,7 @@ def extract_features(posts):
     subreddits = [p['subreddit'] for p in posts]
     unique_subreddits = len(set(subreddits))
     
-    mental_health_subs = [
-        'depression', 'anxiety', 'mentalhealth', 'suicidewatch',
-        'bpd', 'bipolarreddit', 'ocd', 'ptsd', 'socialanxiety',
-        'panicattack', 'mentalillness', 'therapy', 'mentalhealthsupport',
-        'anxietyhelp', 'depressionhelp', 'healthanxiety', 'cptsd',
-        'stopselfharm', 'dpdr', 'lonely'
-    ]
+    # Use mental health subs from config
     mh_posts = sum(1 for s in subreddits if s.lower() in mental_health_subs)
     mh_ratio = mh_posts / len(posts)
     
@@ -598,13 +573,8 @@ def extract_features(posts):
     temporal_consistency = calculate_temporal_consistency(posts)
     baseline_stability = calculate_baseline_stability(posts) if len(posts) >= 20 else 0.0
     
-    # Determine cold start phase
-    if confidence_score < 0.33:
-        cold_start_phase = 'cold_start'
-    elif confidence_score < 1.0:
-        cold_start_phase = 'transition'
-    else:
-        cold_start_phase = 'fully_personalized'
+    # All collected users are full_personalization (sufficient data)
+    cold_start_phase = 'fully_personalized'
     
     features = {
         'total_posts': len(posts),
@@ -649,13 +619,6 @@ start_time = time.time()
 collected_users = []
 candidates_checked = 0
 candidates_rejected = 0
-
-# Track category targets for stratified sampling
-category_counts = {
-    'cold_start': 0,
-    'transition': 0,
-    'full_personalization': 0
-}
 
 # Try to load existing data
 try:
@@ -788,56 +751,47 @@ for username in candidates_to_check:
     # Extract features
     features = extract_features(posts)
     
-    # Focus only on users with sufficient data (full personalization)
+    # Check if user has minimum posts (already checked in check_user_quality, but double-check)
     post_count = len(posts)
-    if post_count < 30:
-        print(f"   ⏭️  Only {post_count} posts (need 30+ for reliable baselines)")
+    required_posts = settings.get('min_posts_per_user', 30)
+    if post_count < required_posts:
+        print(f"   ⏭️  Only {post_count} posts (need {required_posts}+ for reliable baselines)")
         candidates_rejected += 1
         continue
 
-    # All accepted users are "full_personalization" category
-    category = "full_personalization"
-    
     # Calculate baseline stability for metadata
     baseline_stability = calculate_baseline_stability(posts) if len(posts) >= 20 else 0.0
     
     # Use already generated anonymous ID
     user_id = f"user_{len(collected_users)+1:04d}"
     
-    # Save user data with cold start metadata
+    # Save user data (full_personalization focus)
     user_data = {
         'user_id': user_id,
         'username_hash': username_hash,
         'collection_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'posts': posts,
         'features': features,
-        'cold_start_metadata': {
+        'metadata': {
             'post_count': len(posts),
-            'confidence_score': features.get('confidence_score', 0),
-            'cold_start_phase': features.get('cold_start_phase', 'unknown'),
             'baseline_stability': round(baseline_stability, 3),
             'temporal_consistency': features.get('temporal_consistency', 0),
-            'suitable_for_cold_start_testing': len(posts) < 30,
-            'suitable_for_baseline_testing': len(posts) >= 30 and baseline_stability > 0.85,
-            'category': category if 'user_categories' in settings else 'unknown'
+            'category': 'full_personalization'
         }
     }
     
     collected_users.append(user_data)
     
-    # Increment category count
-    if 'user_categories' in settings:
-        category_counts[category] += 1
-    
-    print(f"   ✅ COLLECTED! ({len(posts)} posts, {category if 'user_categories' in settings else 'N/A'}) - Total: {len(collected_users)}/{settings['target_users']}")
+    print(f"   ✅ COLLECTED! ({len(posts)} posts, full_personalization) - Total: {len(collected_users)}/{settings['target_users']}")
 
     
     # Save after each user (in case of interruption)
     with open('data/collected_users.json', 'w') as f:
         json.dump(collected_users, f, indent=2)
     
-    # Send email notification every 100 users
-    if len(collected_users) % 100 == 0:
+    # Send email notification at milestones (configurable)
+    email_milestone = settings.get('email_milestone_frequency', 100)
+    if len(collected_users) % email_milestone == 0:
         total_posts = sum(u['features']['total_posts'] for u in collected_users)
         avg_posts = total_posts / len(collected_users)
         avg_sentiment = sum(u['features']['avg_sentiment'] for u in collected_users) / len(collected_users)
@@ -851,8 +805,9 @@ for username in candidates_to_check:
             time_elapsed=time_elapsed
         )
     
-    # Rate limiting
-    time.sleep(2)
+    # Rate limiting (configurable)
+    rate_limit = settings.get('rate_limit_seconds', 2)
+    time.sleep(rate_limit)
 
 # ===============================================================F=============
 # FINAL SUMMARY
@@ -890,11 +845,11 @@ if collected_users:
 
 print(f"\n💾 Data saved to: data/collected_users.json")
 
-# Calculate population baseline for cold start analysis
+# Calculate population baseline statistics
 if collected_users:
     def calculate_population_baseline(collected_users):
         """
-        Calculate population-level statistics for cold start comparison
+        Calculate population-level statistics for personalization
         """
         all_sentiments = []
         all_frequencies = []
@@ -945,13 +900,14 @@ if collected_users:
         candidates_rejected=candidates_rejected
     )
 
-# Cold start analysis statistics
+# Dataset composition statistics
 if collected_users:
     print(f"\n🔬 Dataset Composition:")
-    print(f"   All users have 30+ posts (full personalization focus)")
+    min_posts = settings.get('min_posts_per_user', 30)
+    print(f"   All users have {min_posts}+ posts (full personalization)")
     print(f"   Post count distribution:")
-    post_counts = [u['cold_start_metadata']['post_count'] for u in collected_users]
-    print(f"     30-50 posts: {sum(1 for count in post_counts if 30 <= count <= 50)}")
+    post_counts = [u['metadata']['post_count'] for u in collected_users]
+    print(f"     {min_posts}-50 posts: {sum(1 for count in post_counts if min_posts <= count <= 50)}")
     print(f"     51-80 posts: {sum(1 for count in post_counts if 51 <= count <= 80)}")
     print(f"     81+ posts: {sum(1 for count in post_counts if count > 80)}")
 
@@ -986,12 +942,13 @@ with open('data/collection_log.txt', 'w', encoding='utf-8') as log_file:
         log_file.write(f"   Average time per user: {total_time/len(collected_users):.1f} seconds\n")
         log_file.write(f"   Posts collected per hour: {(total_posts/(total_time/3600)):.1f}\n")
         
-        # Cold start statistics
+        # Dataset composition statistics
+        min_posts = settings.get('min_posts_per_user', 30)
         log_file.write(f"\n🔬 Dataset Composition:\n")
-        log_file.write(f"   All users have 30+ posts (full personalization focus)\n")
+        log_file.write(f"   All users have {min_posts}+ posts (full personalization)\n")
         log_file.write(f"   Post count distribution:\n")
-        post_counts = [u['cold_start_metadata']['post_count'] for u in collected_users]
-        log_file.write(f"     30-50 posts: {sum(1 for count in post_counts if 30 <= count <= 50)}\n")
+        post_counts = [u['metadata']['post_count'] for u in collected_users]
+        log_file.write(f"     {min_posts}-50 posts: {sum(1 for count in post_counts if min_posts <= count <= 50)}\n")
         log_file.write(f"     51-80 posts: {sum(1 for count in post_counts if 51 <= count <= 80)}\n")
         log_file.write(f"     81+ posts: {sum(1 for count in post_counts if count > 80)}\n")
     else:

@@ -1,45 +1,80 @@
 {
   "collection_settings": {
-    "target_users": 2000,
+    "target_users": 1500,
     "min_posts_per_user": 30,
     "time_window_days": 60,
-    "min_text_length": 50,
+    "min_text_length": 30,
     "min_subreddits": 3,
+    "min_time_span_days": 7,
     "min_mh_posts": 12,
-    "min_mh_participation_ratio": 0.40,
-    "min_baseline_stability": 0.75,
-    
+    "min_mh_participation_ratio": 0.50,
+    "min_baseline_stability": 0.70,
+    "min_posts_for_stability_check": 20,
+    "min_posts_for_sentiment_check": 10,
+    "early_mh_filter_threshold": 10,
+    "rate_limit_seconds": 2,
+    "email_milestone_frequency": 100,
+
+    "late_night_hour_start": 0,
+    "late_night_hour_end": 6,
+
     "sentiment_validation": {
       "min_sentiment": -0.6,
-      "max_sentiment": 0.25,
+      "max_sentiment": 0.1,
       "require_negative_posts": 10
     }
   },
-  
+
   "subreddits_to_search": [
-   "depression",
-   "anxiety",
-   "mentalhealth",
-   "suicidewatch",
-   "BPD",
-   "bipolarreddit",
-   "OCD",
-   "PTSD",
-   "socialanxiety",
-   "panicattack",
-   "mentalillness",
-   "therapy",
-   "mentalhealthsupport",
-   "anxietyhelp",
-   "depressionhelp",
-   "HealthAnxiety",
-   "CPTSD",
-   "stopselfharm",
-   "dpdr",
-   "lonely"
+    "depression",
+    "depression_help",
+    "depressed",
+    "SuicideWatch",
+    "lonely",
+    "offmychest",
+    "vent",
+
+    "Anxiety",
+    "socialanxiety",
+    "panicdisorder",
+    "HealthAnxiety",
+    "panicattack",
+
+    "mentalhealth",
+    "mentalillness",
+    "MentalHealthSupport",
+
+    "BPD",
+    "bipolar",
+    "OCD",
+    "PTSD",
+    "CPTSD",
+    "stopselfharm",
+
+    "ADHD",
+    "adhdwomen",
+
+    "emotionalabuse",
+    "raisedbynarcissists",
+    "griefsupport",
+
+    "therapy",
+    "anxietyhelp",
+    "depressionhelp",
+    "mentalhealthsupport",
+
+    "TrueOffMyChest",
+    "getting_over_it",
+    "ForeverAlone",
+    "depression_memes",
+    "Stress",
+    "SelfHarmScars",
+    "sad",
+    "BorderlinePDisorder",
+    "bipolar2"
   ],
-  
+
   "sort_methods": ["hot", "new", "top"],
-  
-  "posts_to_scan_per_subreddit": 300
+
+  "posts_to_scan_per_subreddit": 1000
 }
