@@ -632,6 +632,9 @@ except:
 print("\n--- PHASE 1: DISCOVERING CANDIDATES ---")
 all_candidates = set()
 
+# Memory optimization: Build already collected set first
+already_collected = {u['username_hash'] for u in collected_users}
+
 for subreddit in config['subreddits_to_search']:
     for sort_method in config['sort_methods']:
         users = get_users_from_subreddit(
@@ -643,13 +646,15 @@ for subreddit in config['subreddits_to_search']:
         
         time.sleep(2)  # Be nice to Reddit
 
-# Remove already collected users
-already_collected = {u['username_hash'] for u in collected_users}
+# Remove already collected users (convert to list for iteration)
 candidates_to_check = [u for u in all_candidates 
                       if hashlib.sha256(u.encode()).hexdigest()[:16] not in already_collected]
 
+# Free up memory
+del all_candidates
+
 print(f"\n📊 Discovery complete:")
-print(f"   Found: {len(all_candidates)} total candidates")
+print(f"   Found: {len(candidates_to_check) + len(already_collected)} total candidates")
 print(f"   Already collected: {len(already_collected)} users")
 print(f"   New to check: {len(candidates_to_check)} users")
 
@@ -673,7 +678,7 @@ try:
             <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-top: 15px;">
               <h3>Candidate Discovery:</h3>
               <ul style="font-size: 16px; line-height: 1.8;">
-                <li><strong>Total Candidates Found:</strong> {len(all_candidates)}</li>
+                <li><strong>Total Candidates Found:</strong> {len(candidates_to_check) + len(already_collected)}</li>
                 <li><strong>Already Collected:</strong> {len(already_collected)}</li>
                 <li><strong>New to Check:</strong> {len(candidates_to_check)}</li>
               </ul>
